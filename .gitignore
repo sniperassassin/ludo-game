@@ -1,0 +1,22 @@
+# Android
+*.iml
+.gradle/
+local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# Module builds
+app/build/
+core/build/
+network/build/
+
+# Firebase (never commit this)
+google-services.json
+
+# Keystore
+*.jks
+*.keystore

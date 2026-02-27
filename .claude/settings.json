@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew :core:test)",
+      "Bash(./gradlew :core:test --info)",
+      "Bash(./gradlew tasks --group=\"install\")",
+      "Bash(adb devices)",
+      "Bash(./gradlew :app:compileDebugKotlin)",
+      "Bash(\"C:/Users/aroy02/AppData/Local/Android/Sdk/emulator/emulator.exe\" -avd Medium_Phone_API_36.1 -no-snapshot-load)",
+      "Bash(C:/Users/aroy02/AppData/Local/Android/Sdk/platform-tools/adb.exe emu kill)",
+      "Bash(tasklist)",
+      "Bash(taskkill //F //IM emulator.exe)",
+      "Bash(taskkill //F //IM qemu-system-x86_64.exe)",
+      "Bash(taskkill //F //IM emulator.exe //F //IM qemu-system-x86_64.exe)"
+    ]
+  }
+}
