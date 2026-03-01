@@ -21,18 +21,46 @@ class GameEngine(private val diceRoller: DiceRoller = DiceRoller()) {
     fun rollDice(state: GameState): GameState {
         require(state.phase == GamePhase.ROLLING) { "Not in rolling phase" }
         val value = diceRoller.roll()
-        return state.copy(diceValue = value, phase = GamePhase.MOVING)
+        
+        val newConsecutiveSixes = if (value == 6) state.consecutiveSixes + 1 else 0
+        
+        return if (newConsecutiveSixes == 3) {
+            // Three sixes in a row: turn ends immediately, no move allowed
+            state.copy(
+                diceValue = value,
+                consecutiveSixes = 0,
+                currentTurnIndex = (state.currentTurnIndex + 1) % state.players.size,
+                phase = GamePhase.ROLLING
+            )
+        } else {
+            state.copy(
+                diceValue = value,
+                consecutiveSixes = newConsecutiveSixes,
+                phase = GamePhase.MOVING
+            )
+        }
     }
 
     fun moveToken(state: GameState, tokenId: Int): GameState {
         require(state.phase == GamePhase.MOVING) { "Not in moving phase" }
         val currentPlayer = state.players[state.currentTurnIndex]
-        val token = currentPlayer.tokens.find { it.id == tokenId } ?: return state
+        
+        // CRITICAL FIX: Only allow moving tokens that belong to the current player
+        val token = currentPlayer.tokens.find { it.id == tokenId } 
+            ?: return state.copy(phase = GamePhase.MOVING) // Ignore if not current player's token
 
         val updatedToken = applyMove(token, state.diceValue, currentPlayer)
+        
+        // If move was invalid (e.g. overshoot), don't update state
+        if (updatedToken == token && token.status != TokenStatus.HOME) {
+             return state
+        }
+
         val updatedPlayer = currentPlayer.copy(
             tokens = currentPlayer.tokens.map { if (it.id == tokenId) updatedToken else it }
         )
+
+        var captureOccurred = false
         var updatedPlayers = state.players.map {
             if (it.id == currentPlayer.id) updatedPlayer else it
         }
@@ -45,64 +73,73 @@ class GameEngine(private val diceRoller: DiceRoller = DiceRoller()) {
         ) {
             updatedPlayers = updatedPlayers.map { p ->
                 if (p.id == currentPlayer.id) p
-                else p.copy(
-                    tokens = p.tokens.map { t ->
-                        if (t.status == TokenStatus.ACTIVE && t.position == updatedToken.position)
+                else {
+                    var capturedInThisPlayer = false
+                    val newTokens = p.tokens.map { t ->
+                        if (t.status == TokenStatus.ACTIVE && t.position == updatedToken.position) {
+                            capturedInThisPlayer = true
                             t.copy(position = -1, status = TokenStatus.HOME)
-                        else t
+                        } else t
                     }
-                )
+                    if (capturedInThisPlayer) captureOccurred = true
+                    p.copy(tokens = newTokens)
+                }
             }
         }
 
+        val tokenFinished = token.status != TokenStatus.FINISHED && updatedToken.status == TokenStatus.FINISHED
         val winner = updatedPlayers.find { p -> p.tokens.all { it.status == TokenStatus.FINISHED } }
 
-        // Rolling a 6 grants an extra turn
-        val nextTurnIndex = if (state.diceValue == 6) state.currentTurnIndex
-                            else (state.currentTurnIndex + 1) % state.players.size
+        // Extra turn rules: rolling a 6, capturing an opponent, or finishing a token
+        val grantExtraTurn = state.diceValue == 6 || captureOccurred || tokenFinished
+        
+        val nextTurnIndex = if (grantExtraTurn && winner == null) {
+            state.currentTurnIndex
+        } else {
+            (state.currentTurnIndex + 1) % state.players.size
+        }
+
+        // Reset consecutive sixes if turn changes
+        val finalConsecutiveSixes = if (nextTurnIndex == state.currentTurnIndex) state.consecutiveSixes else 0
 
         return state.copy(
             players = updatedPlayers,
             currentTurnIndex = nextTurnIndex,
+            consecutiveSixes = finalConsecutiveSixes,
             phase = if (winner != null) GamePhase.FINISHED else GamePhase.ROLLING,
-            winnerId = winner?.id
+            winnerId = winner?.id,
+            diceValue = if (nextTurnIndex != state.currentTurnIndex) 0 else state.diceValue
         )
     }
 
-    private fun applyMove(token: Token, diceValue: Int, player: Player): Token =
-        when (token.status) {
-            TokenStatus.HOME -> {
-                if (BoardRules.canExitHome(diceValue)) {
-                    val startPos = BoardRules.startPositions[player.color] ?: 0
-                    token.copy(position = startPos, status = TokenStatus.ACTIVE)
-                } else token
-            }
-            TokenStatus.ACTIVE -> {
-                val startPos = BoardRules.startPositions[player.color] ?: return token
-                when {
-                    // Already in home column (pos 52–56): move straight toward center
-                    token.position in BoardRules.HOME_COL_START..BoardRules.HOME_COL_END -> {
-                        val newPos = token.position + diceValue
-                        if (newPos == BoardRules.FINISH_POSITION)
-                            token.copy(position = newPos, status = TokenStatus.FINISHED)
-                        else
-                            token.copy(position = newPos)
-                    }
-                    // On main track: compute relative position from start
-                    else -> {
-                        val relPos = (token.position - startPos + BoardRules.TRACK_SIZE) % BoardRules.TRACK_SIZE
-                        val newRelPos = relPos + diceValue
-                        when {
-                            newRelPos <= 50 ->
-                                token.copy(position = (startPos + newRelPos) % BoardRules.TRACK_SIZE)
-                            newRelPos + 1 in BoardRules.HOME_COL_START..BoardRules.HOME_COL_END ->
-                                token.copy(position = newRelPos + 1)  // enters home column (52–56)
-                            else ->
-                                token.copy(position = BoardRules.FINISH_POSITION, status = TokenStatus.FINISHED)
-                        }
-                    }
-                }
-            }
-            TokenStatus.FINISHED -> token
+    private fun applyMove(token: Token, diceValue: Int, player: Player): Token {
+        if (token.status == TokenStatus.FINISHED) return token
+
+        val startPos = BoardRules.startPositions[player.color] ?: 0
+
+        if (token.status == TokenStatus.HOME) {
+            return if (BoardRules.canExitHome(diceValue)) {
+                token.copy(position = startPos, status = TokenStatus.ACTIVE)
+            } else token
         }
+
+        // TokenStatus.ACTIVE
+        val relPos = if (token.position >= BoardRules.HOME_COL_START) {
+            token.position
+        } else {
+            (token.position - startPos + BoardRules.TRACK_SIZE) % BoardRules.TRACK_SIZE
+        }
+
+        val newRelPos = relPos + diceValue
+
+        return when {
+            newRelPos > BoardRules.FINISH_POSITION -> token // Overshoot
+            newRelPos == BoardRules.FINISH_POSITION ->
+                token.copy(position = BoardRules.FINISH_POSITION, status = TokenStatus.FINISHED)
+            newRelPos >= BoardRules.HOME_COL_START ->
+                token.copy(position = newRelPos)
+            else ->
+                token.copy(position = (startPos + newRelPos) % BoardRules.TRACK_SIZE)
+        }
+    }
 }

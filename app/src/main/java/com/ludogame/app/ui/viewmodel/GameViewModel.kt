@@ -1,6 +1,7 @@
 package com.ludogame.app.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.ludogame.core.engine.BoardRules
 import com.ludogame.core.engine.GameEngine
 import com.ludogame.core.model.GamePhase
@@ -8,9 +9,11 @@ import com.ludogame.core.model.GameState
 import com.ludogame.core.model.Player
 import com.ludogame.core.model.PlayerColor
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -38,26 +41,48 @@ class GameViewModel @Inject constructor(
     fun rollDice() {
         val state = _gameState.value ?: return
         if (state.phase != GamePhase.ROLLING) return
+        
         val rolled = engine.rollDice(state)
         _gameState.value = rolled
-        // If no tokens can move after this roll, auto-skip to the next player
+
+        // If turn ended automatically (e.g. 3 sixes), just refresh and return
+        if (rolled.phase == GamePhase.ROLLING) {
+            refreshMovable()
+            return
+        }
+
         val player = rolled.players[rolled.currentTurnIndex]
         val canMove = BoardRules.movableTokens(player.tokens, rolled.diceValue, player.color)
+        
         if (canMove.isEmpty()) {
-            val skipped = rolled.copy(
-                currentTurnIndex = (rolled.currentTurnIndex + 1) % rolled.players.size,
-                phase = GamePhase.ROLLING,
-                diceValue = 0
-            )
-            _gameState.value = skipped
+            viewModelScope.launch {
+                delay(1000) // Small delay so user sees the dice value
+                val skipped = rolled.copy(
+                    currentTurnIndex = (rolled.currentTurnIndex + 1) % rolled.players.size,
+                    phase = GamePhase.ROLLING,
+                    diceValue = 0,
+                    consecutiveSixes = 0
+                )
+                _gameState.value = skipped
+                refreshMovable()
+            }
+        } else {
+            refreshMovable()
         }
-        refreshMovable()
     }
 
     fun moveToken(tokenId: Int) {
         val state = _gameState.value ?: return
         if (state.phase != GamePhase.MOVING) return
-        _gameState.value = engine.moveToken(state, tokenId)
+        
+        // Ensure only tokens of the current player can be moved
+        val currentPlayer = state.players[state.currentTurnIndex]
+        val token = currentPlayer.tokens.find { it.id == tokenId }
+        
+        if (token != null) {
+            _gameState.value = engine.moveToken(state, tokenId)
+        }
+        
         refreshMovable()
     }
 
